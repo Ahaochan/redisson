@@ -54,6 +54,7 @@ public class RedissonLock extends RedissonBaseLock {
     public RedissonLock(CommandAsyncExecutor commandExecutor, String name) {
         super(commandExecutor, name);
         this.commandExecutor = commandExecutor;
+        // 读取配置里的watchdog超时时间, 默认30秒
         this.internalLockLeaseTime = commandExecutor.getConnectionManager().getCfg().getLockWatchdogTimeout();
         this.pubSub = commandExecutor.getConnectionManager().getSubscribeService().getLockPubSub();
     }
@@ -65,6 +66,7 @@ public class RedissonLock extends RedissonBaseLock {
     @Override
     public void lock() {
         try {
+            // 过期时间为-1, 永久获取锁, watchdog会自动续期
             lock(-1, null, false);
         } catch (InterruptedException e) {
             throw new IllegalStateException();
@@ -91,8 +93,9 @@ public class RedissonLock extends RedissonBaseLock {
         lock(leaseTime, unit, true);
     }
 
-    private void lock(long leaseTime, TimeUnit unit, boolean interruptibly) throws InterruptedException {
+    private void lock(long leaseTime, TimeUnit unit, boolean ) throws InterruptedException {
         long threadId = Thread.currentThread().getId();
+        // 加锁的核心逻辑
         Long ttl = tryAcquire(-1, leaseTime, unit, threadId);
         // lock acquired
         if (ttl == null) {
@@ -140,6 +143,7 @@ public class RedissonLock extends RedissonBaseLock {
     }
     
     private Long tryAcquire(long waitTime, long leaseTime, TimeUnit unit, long threadId) {
+        // 异步转同步acquire
         return get(tryAcquireAsync(waitTime, leaseTime, unit, threadId));
     }
     
@@ -168,9 +172,11 @@ public class RedissonLock extends RedissonBaseLock {
 
     private <T> RFuture<Long> tryAcquireAsync(long waitTime, long leaseTime, TimeUnit unit, long threadId) {
         RFuture<Long> ttlRemainingFuture;
+        // 如果leaseTime != -1, 就说明是有限续期的锁
         if (leaseTime != -1) {
             ttlRemainingFuture = tryLockInnerAsync(waitTime, leaseTime, unit, threadId, RedisCommands.EVAL_LONG);
         } else {
+            // internalLockLeaseTime是读取配置里的watchdog超时时间, 默认30秒
             ttlRemainingFuture = tryLockInnerAsync(waitTime, internalLockLeaseTime,
                     TimeUnit.MILLISECONDS, threadId, RedisCommands.EVAL_LONG);
         }
@@ -195,17 +201,25 @@ public class RedissonLock extends RedissonBaseLock {
 
     <T> RFuture<T> tryLockInnerAsync(long waitTime, long leaseTime, TimeUnit unit, long threadId, RedisStrictCommand<T> command) {
         return evalWriteAsync(getRawName(), LongCodec.INSTANCE, command,
+
                 "if (redis.call('exists', KEYS[1]) == 0) then " +
+                        // 如果key为KEYS[1]的KV不存在, 说明之前没有加过锁, 就弄一个Hash类型的值
+                        // 把ARGV[2], 也就是线程Id生成的一个名称, 它的值作为当前线程的加锁次数, +1
                         "redis.call('hincrby', KEYS[1], ARGV[2], 1); " +
+                        // 并设置过期时间为ARGV[1], 然后返回
                         "redis.call('pexpire', KEYS[1], ARGV[1]); " +
                         "return nil; " +
                         "end; " +
+                        // 如果key为KEYS[1]的KV存在, 说明之前加过锁, 就再看看当前线程有没有加过锁, 判断是否可重入
                         "if (redis.call('hexists', KEYS[1], ARGV[2]) == 1) then " +
+                        // 如果可重入, 就继续设置加锁的线程id的value加1, 并且续命过期时间
                         "redis.call('hincrby', KEYS[1], ARGV[2], 1); " +
                         "redis.call('pexpire', KEYS[1], ARGV[1]); " +
                         "return nil; " +
                         "end; " +
+                        // 如果当前线程没有加过锁, 就加锁失败, 返回锁的过期时间
                         "return redis.call('pttl', KEYS[1]);",
+                // KEYS[1]是锁的名称, ARGV[1]是超时时间, ARGV[2]是锁的值
                 Collections.singletonList(getRawName()), unit.toMillis(leaseTime), getLockName(threadId));
     }
 

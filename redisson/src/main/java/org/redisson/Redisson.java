@@ -338,6 +338,8 @@ public class Redisson implements RedissonClient {
 
     @Override
     public RLock getLock(String name) {
+        // 创建一个RedissonLock实例
+        // commandExecutor是命令执行器, 用来和Redis通信
         return new RedissonLock(commandExecutor, name);
     }
 
