@@ -99,9 +99,11 @@ public class RedissonLock extends RedissonBaseLock {
         Long ttl = tryAcquire(-1, leaseTime, unit, threadId);
         // lock acquired
         if (ttl == null) {
+            // 如果ttl为null, 说明加锁成功
             return;
         }
 
+        // 如果ttl不为null, 说明加锁失败, 有其他线程在占用这个锁, 就阻塞等待获取锁
         CompletableFuture<RedissonLockEntry> future = subscribe(threadId);
         RedissonLockEntry entry;
         if (interruptibly) {
@@ -112,9 +114,11 @@ public class RedissonLock extends RedissonBaseLock {
 
         try {
             while (true) {
+                // 死循环, 阻塞, 不停获取锁
                 ttl = tryAcquire(-1, leaseTime, unit, threadId);
                 // lock acquired
                 if (ttl == null) {
+                    // 如果ttl为null, 说明加锁成功
                     break;
                 }
 
