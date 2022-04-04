@@ -180,12 +180,15 @@ public class RedissonLock extends RedissonBaseLock {
             ttlRemainingFuture = tryLockInnerAsync(waitTime, internalLockLeaseTime,
                     TimeUnit.MILLISECONDS, threadId, RedisCommands.EVAL_LONG);
         }
+        // RFuture里封装了锁的剩余存活时间, 也就是还有多久锁就自动失效
+        // 这里加了一个thenApply监听器, 是JUC的东西, 相当于一个监听器, 当拿到锁后执行下面的逻辑
         CompletionStage<Long> f = ttlRemainingFuture.thenApply(ttlRemaining -> {
             // lock acquired
             if (ttlRemaining == null) {
                 if (leaseTime != -1) {
                     internalLockLeaseTime = unit.toMillis(leaseTime);
                 } else {
+                    // 拿到锁后, 开启一个定时任务, 对这个锁续期
                     scheduleExpirationRenewal(threadId);
                 }
             }

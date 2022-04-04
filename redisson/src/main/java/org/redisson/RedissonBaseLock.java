@@ -130,7 +130,8 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
         if (ee == null) {
             return;
         }
-        
+
+        // 开启一个定时任务, 每10秒就重新设置过期时间为30秒
         Timeout task = commandExecutor.getConnectionManager().newTimeout(new TimerTask() {
             @Override
             public void run(Timeout timeout) throws Exception {
@@ -142,7 +143,8 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
                 if (threadId == null) {
                     return;
                 }
-                
+
+                // 重新修改过期时间为30秒
                 RFuture<Boolean> future = renewExpirationAsync(threadId);
                 future.whenComplete((res, e) -> {
                     if (e != null) {
@@ -153,25 +155,31 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
                     
                     if (res) {
                         // reschedule itself
+                        // 递归调用自己, 相当于无限循环
                         renewExpiration();
                     } else {
                         cancelExpirationRenewal(null);
                     }
                 });
             }
+            // 默认续期时间是30秒, 所以这里是加锁10秒后就会执行这个定时任务
         }, internalLockLeaseTime / 3, TimeUnit.MILLISECONDS);
         
         ee.setTimeout(task);
     }
     
     protected void scheduleExpirationRenewal(long threadId) {
+        // 将这个锁封装为一个ExpirationEntry, 加入全局的一个Map里面
         ExpirationEntry entry = new ExpirationEntry();
         ExpirationEntry oldEntry = EXPIRATION_RENEWAL_MAP.putIfAbsent(getEntryName(), entry);
         if (oldEntry != null) {
+            // 将线程id追加到ExpirationEntry里
             oldEntry.addThreadId(threadId);
         } else {
+            // 将线程id追加到ExpirationEntry里
             entry.addThreadId(threadId);
             try {
+                // 如果之前没有对这个锁续期过, 就开启一个定时任务TimerTask, 进行续期
                 renewExpiration();
             } finally {
                 if (Thread.currentThread().isInterrupted()) {
@@ -183,12 +191,15 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
 
     protected RFuture<Boolean> renewExpirationAsync(long threadId) {
         return evalWriteAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+                // 如果key为KEYS[1]的KV, 它的值ARGV[2]为1, 说明是当前线程持有锁
                 "if (redis.call('hexists', KEYS[1], ARGV[2]) == 1) then " +
+                        // 然后对这个key为KEYS[1]的KV锁, 再修改过期时间为ARGV[1]秒
                         "redis.call('pexpire', KEYS[1], ARGV[1]); " +
                         "return 1; " +
                         "end; " +
                         "return 0;",
                 Collections.singletonList(getRawName()),
+                // ARGV[1], 也就是internalLockLeaseTime, 默认为30秒
                 internalLockLeaseTime, getLockName(threadId));
     }
 
