@@ -208,7 +208,7 @@ public class RedissonLock extends RedissonBaseLock {
 
     <T> RFuture<T> tryLockInnerAsync(long waitTime, long leaseTime, TimeUnit unit, long threadId, RedisStrictCommand<T> command) {
         return evalWriteAsync(getRawName(), LongCodec.INSTANCE, command,
-
+                // KEYS[1]是锁名称, ARGV[1]是过期时间, ARGV[2]是线程N的锁重入次数
                 "if (redis.call('exists', KEYS[1]) == 0) then " +
                         // 如果key为KEYS[1]的KV不存在, 说明之前没有加过锁, 就弄一个Hash类型的值
                         // 把ARGV[2], 也就是线程Id生成的一个名称, 它的值作为当前线程的加锁次数, +1
@@ -319,6 +319,7 @@ public class RedissonLock extends RedissonBaseLock {
     @Override
     public void unlock() {
         try {
+            // 异步转同步acquire
             get(unlockAsync(Thread.currentThread().getId()));
         } catch (RedisException e) {
             if (e.getCause() instanceof IllegalMonitorStateException) {
@@ -359,14 +360,20 @@ public class RedissonLock extends RedissonBaseLock {
 
     protected RFuture<Boolean> unlockInnerAsync(long threadId) {
         return evalWriteAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+                // KEYS[1]是锁名称, KEYS[2]是channel名称, ARGV[1]是发布的信息
+                // ARGV[2]是过期时间, ARGV[3]是线程N的锁重入次数
                 "if (redis.call('hexists', KEYS[1], ARGV[3]) == 0) then " +
+                        // 如果这个锁, 对于这个线程的加锁次数是0, 说明已经释放锁了, 或者没有加过锁, 就直接返回了
                         "return nil;" +
                         "end; " +
+                        // 对当前线程的加锁次数-1, 然后将加锁次数赋予counter计数器变量
                         "local counter = redis.call('hincrby', KEYS[1], ARGV[3], -1); " +
                         "if (counter > 0) then " +
+                        // 如果还持有锁, 就给这个锁续期, 设置过期时间为30秒
                         "redis.call('pexpire', KEYS[1], ARGV[2]); " +
                         "return 0; " +
                         "else " +
+                        // 如果加锁次数已经是0了, 就删除这个key, 并且发布一个事件出去, 让其他线程唤醒重新竞争这个锁
                         "redis.call('del', KEYS[1]); " +
                         "redis.call('publish', KEYS[2], ARGV[1]); " +
                         "return 1; " +

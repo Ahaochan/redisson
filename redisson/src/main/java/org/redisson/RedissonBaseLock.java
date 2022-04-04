@@ -330,9 +330,11 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
 
     @Override
     public RFuture<Void> unlockAsync(long threadId) {
+        // 进行解锁
         RFuture<Boolean> future = unlockInnerAsync(threadId);
 
         CompletionStage<Void> f = future.handle((opStatus, e) -> {
+            // 解锁成功后, 将自动续期的定时任务停下来
             cancelExpirationRenewal(threadId);
 
             if (e != null) {
