@@ -334,6 +334,7 @@ public class CommandAsyncService implements CommandAsyncExecutor {
     }
 
     private NodeSource getNodeSource(String key) {
+        // 根据Redis的key计算出一个slot槽位, 封装成NodeSource
         int slot = connectionManager.calcSlot(key);
         return new NodeSource(slot);
     }
@@ -394,6 +395,7 @@ public class CommandAsyncService implements CommandAsyncExecutor {
 
     @Override
     public <T, R> RFuture<R> evalWriteAsync(String key, Codec codec, RedisCommand<T> evalCommandType, String script, List<Object> keys, Object... params) {
+        // 根据Redis的key计算出一个slot槽位, 封装成NodeSource
         NodeSource source = getNodeSource(key);
         return evalAsync(source, false, codec, evalCommandType, script, keys, false, params);
     }

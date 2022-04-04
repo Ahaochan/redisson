@@ -212,9 +212,11 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
     }
 
     protected <T> RFuture<T> evalWriteAsync(String key, Codec codec, RedisCommand<T> evalCommandType, String script, List<Object> keys, Object... params) {
+        // 根据Redis锁的名称, 也就是key, 计算出一个MasterSlave节点
         MasterSlaveEntry entry = commandExecutor.getConnectionManager().getEntry(getRawName());
         int availableSlaves = entry.getAvailableSlaves();
 
+        // 跑去执行CommandAsyncService的evalWriteAsync方法
         CommandBatchService executorService = createCommandBatchService(availableSlaves);
         RFuture<T> result = executorService.evalWriteAsync(key, codec, evalCommandType, script, keys, params);
         if (commandExecutor instanceof CommandBatchService) {

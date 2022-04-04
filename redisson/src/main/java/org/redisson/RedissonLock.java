@@ -93,7 +93,7 @@ public class RedissonLock extends RedissonBaseLock {
         lock(leaseTime, unit, true);
     }
 
-    private void lock(long leaseTime, TimeUnit unit, boolean ) throws InterruptedException {
+    private void lock(long leaseTime, TimeUnit unit, boolean interruptibly) throws InterruptedException {
         long threadId = Thread.currentThread().getId();
         // 加锁的核心逻辑
         Long ttl = tryAcquire(-1, leaseTime, unit, threadId);
@@ -212,7 +212,6 @@ public class RedissonLock extends RedissonBaseLock {
                         "end; " +
                         // 如果key为KEYS[1]的KV存在, 说明之前加过锁, 就再看看当前线程有没有加过锁, 判断是否可重入
                         "if (redis.call('hexists', KEYS[1], ARGV[2]) == 1) then " +
-                        // 如果可重入, 就继续设置加锁的线程id的value加1, 并且续命过期时间
                         "redis.call('hincrby', KEYS[1], ARGV[2], 1); " +
                         "redis.call('pexpire', KEYS[1], ARGV[1]); " +
                         "return nil; " +
