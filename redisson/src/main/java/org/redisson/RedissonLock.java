@@ -189,6 +189,7 @@ public class RedissonLock extends RedissonBaseLock {
         CompletionStage<Long> f = ttlRemainingFuture.thenApply(ttlRemaining -> {
             // lock acquired
             if (ttlRemaining == null) {
+                // 如果leaseTime != -1, 就说明是有限续期的锁, 就不开启watchdog自动续期了
                 if (leaseTime != -1) {
                     internalLockLeaseTime = unit.toMillis(leaseTime);
                 } else {
@@ -234,14 +235,18 @@ public class RedissonLock extends RedissonBaseLock {
         long time = unit.toMillis(waitTime);
         long current = System.currentTimeMillis();
         long threadId = Thread.currentThread().getId();
+        // 尝试获取锁
         Long ttl = tryAcquire(waitTime, leaseTime, unit, threadId);
         // lock acquired
         if (ttl == null) {
+            // 如果ttl为null, 说明拿到了锁, 就可以直接返回了
             return true;
         }
-        
+
+        // time是等待时间, 减掉上面步骤花费的时间
         time -= System.currentTimeMillis() - current;
         if (time <= 0) {
+            // 如果第一次尝试加锁花费的时间超过了等待时间, 就标记获取锁失败了
             acquireFailed(waitTime, unit, threadId);
             return false;
         }
@@ -263,22 +268,28 @@ public class RedissonLock extends RedissonBaseLock {
         }
 
         try {
+            // time是等待时间, 减掉上面步骤花费的时间
             time -= System.currentTimeMillis() - current;
             if (time <= 0) {
+                // 如果上面步骤花费的时间超过了等待时间, 就标记获取锁失败了
                 acquireFailed(waitTime, unit, threadId);
                 return false;
             }
         
             while (true) {
                 long currentTime = System.currentTimeMillis();
+                // 尝试获取锁
                 ttl = tryAcquire(waitTime, leaseTime, unit, threadId);
                 // lock acquired
                 if (ttl == null) {
+                    // 如果ttl为null, 说明拿到了锁, 就可以直接返回了
                     return true;
                 }
 
+                // time是等待时间, 减掉上面步骤花费的时间
                 time -= System.currentTimeMillis() - currentTime;
                 if (time <= 0) {
+                    // 如果上面步骤花费的时间超过了等待时间, 就标记获取锁失败了
                     acquireFailed(waitTime, unit, threadId);
                     return false;
                 }
@@ -291,8 +302,10 @@ public class RedissonLock extends RedissonBaseLock {
                     commandExecutor.getNow(subscribeFuture).getLatch().tryAcquire(time, TimeUnit.MILLISECONDS);
                 }
 
+                // time是等待时间, 减掉上面步骤花费的时间
                 time -= System.currentTimeMillis() - currentTime;
                 if (time <= 0) {
+                    // 如果上面步骤花费的时间超过了等待时间, 就标记获取锁失败了
                     acquireFailed(waitTime, unit, threadId);
                     return false;
                 }
