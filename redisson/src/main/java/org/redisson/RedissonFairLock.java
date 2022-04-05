@@ -160,7 +160,7 @@ public class RedissonFairLock extends RedissonLock implements RLock {
                     // remove stale threads
                     // 1. 进入循环, 将zset中的score小于当前时间的所有线程, 都从zset和队列中移除
                     "while true do " +
-                        // 从阻塞队列左侧取出第一个值, 也就是线程id
+                        // 从队列左侧取出第一个值, 也就是线程id
                         "local firstThreadId2 = redis.call('lindex', KEYS[2], 0);" +
                         "if firstThreadId2 == false then " +
                             // 如果队列是空的, 就直接跳出这个循环
@@ -261,38 +261,52 @@ public class RedissonFairLock extends RedissonLock implements RLock {
     @Override
     protected RFuture<Boolean> unlockInnerAsync(long threadId) {
         return evalWriteAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+                // KEYS[1]是锁名称, KEYS[2]是队列名称, KEYS[3]是zset名称, KEYS[4]是channel名称
+                // ARGS[1]是解锁的消息, ARGS[3]是当前线程的标识, ARGS[4]是当前时间
                 // remove stale threads
+                // 1. 进入循环, 将zset中的score小于当前时间的所有线程, 都从zset和队列中移除
                 "while true do "
+                // 从队列左侧取出第一个值, 也就是线程id
                 + "local firstThreadId2 = redis.call('lindex', KEYS[2], 0);"
                 + "if firstThreadId2 == false then "
+                    // 如果队列是空的, 就直接跳出这个循环
                     + "break;"
                 + "end; "
+                // 如果队列中有值, 就从zset里取出队列第一个元素, 这个线程的score, 作为超时时间timeout
                 + "local timeout = tonumber(redis.call('zscore', KEYS[3], firstThreadId2));"
                 + "if timeout <= tonumber(ARGV[4]) then "
+                    // 如果超时时间小于当前时间, 就从队列和zset中移除这个线程
                     + "redis.call('zrem', KEYS[3], firstThreadId2); "
                     + "redis.call('lpop', KEYS[2]); "
                 + "else "
                     + "break;"
                 + "end; "
               + "end;"
-                
-              + "if (redis.call('exists', KEYS[1]) == 0) then " + 
+
+                // 2. 如果锁不存在, 可能是自动过期失效了
+              + "if (redis.call('exists', KEYS[1]) == 0) then " +
+                    // 发布事件, 通知下一个线程锁释放了, 让它来竞争锁
                     "local nextThreadId = redis.call('lindex', KEYS[2], 0); " + 
                     "if nextThreadId ~= false then " +
                         "redis.call('publish', KEYS[4] .. ':' .. nextThreadId, ARGV[1]); " +
                     "end; " +
                     "return 1; " +
                 "end;" +
+                // 3. 如果锁存在, 但是不是当前线程持有的锁, 也就不能释放锁, 直接返回
                 "if (redis.call('hexists', KEYS[1], ARGV[3]) == 0) then " +
                     "return nil;" +
                 "end; " +
+                // 4. 如果锁存在, 并且是当前线程持有的锁, 就将锁重入次数-1
                 "local counter = redis.call('hincrby', KEYS[1], ARGV[3], -1); " +
                 "if (counter > 0) then " +
+                    // 如果锁重入次数>0, 说明还持有锁, 顺便对锁的过期时间重设一遍
                     "redis.call('pexpire', KEYS[1], ARGV[2]); " +
                     "return 0; " +
                 "end; " +
-                    
+
+                // 5. 如果锁存在, 并且是当前线程持有的锁, 并且释放锁后, 锁重入次数为0, 说明完全释放掉这个锁了, 就删除掉这个锁key
                 "redis.call('del', KEYS[1]); " +
+                // 发布事件, 通知下一个线程锁释放了, 让它来竞争锁
                 "local nextThreadId = redis.call('lindex', KEYS[2], 0); " + 
                 "if nextThreadId ~= false then " +
                     "redis.call('publish', KEYS[4] .. ':' .. nextThreadId, ARGV[1]); " +
