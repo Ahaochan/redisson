@@ -158,7 +158,7 @@ public class RedissonFairLock extends RedissonLock implements RLock {
             // ARGS[1]是锁的存活时间, ARGS[2]是当前线程的标识, ARGS[3]是锁的等待时间, ARGS[4]是当前时间
             return evalWriteAsync(getRawName(), LongCodec.INSTANCE, command,
                     // remove stale threads
-                    // 进入死循环
+                    // 1. 进入循环, 将zset中的score小于当前时间的所有线程, 都从zset和队列中移除
                     "while true do " +
                         // 从阻塞队列左侧取出第一个值, 也就是线程id
                         "local firstThreadId2 = redis.call('lindex', KEYS[2], 0);" +
@@ -167,14 +167,13 @@ public class RedissonFairLock extends RedissonLock implements RLock {
                             "break;" +
                         "end;" +
 
-                        // 拿到zset里, 这个线程的score, 作为超时时间timeout
+                        // 如果队列中有值, 就从zset里取出队列第一个元素, 这个线程的score, 作为超时时间timeout
                         "local timeout = tonumber(redis.call('zscore', KEYS[3], firstThreadId2));" +
                         "if timeout <= tonumber(ARGV[4]) then " +
                             // remove the item from the queue and timeout set
                             // NOTE we do not alter any other timeout
-                            // 如果超时时间小于当前时间, 就从zset移除这个线程
+                            // 如果超时时间小于当前时间, 就从队列和zset中移除这个线程
                             "redis.call('zrem', KEYS[3], firstThreadId2);" +
-                            // 然后将其加入到队列的左侧
                             "redis.call('lpop', KEYS[2]);" +
                         "else " +
                             "break;" +
@@ -182,6 +181,7 @@ public class RedissonFairLock extends RedissonLock implements RLock {
                     "end;" +
 
                     // check if the lock can be acquired now
+                    // 2.
                     // 如果锁不存在并且队列不存在, 说明还没有初始化过这个锁, 就允许加锁
                     // 如果锁不存在, 但是队列存在, 并且队列左侧第一个元素是当前线程id, 说明当前线程持有锁, 也允许加锁
                     // 如果锁存在, 就不允许直接加锁
@@ -210,7 +210,7 @@ public class RedissonFairLock extends RedissonLock implements RLock {
                     "end;" +
 
                     // check if the lock is already held, and this is a re-entry
-                    // 如果锁已经存在了, 并且是当前线程持有锁
+                    // 3. 如果锁已经存在了, 并且是当前线程持有锁
                     "if redis.call('hexists', KEYS[1], ARGV[2]) == 1 then " +
                         // 就进行重入, 锁重入次数+1, 过期时间重置
                         "redis.call('hincrby', KEYS[1], ARGV[2],1);" +
@@ -220,7 +220,7 @@ public class RedissonFairLock extends RedissonLock implements RLock {
 
                     // the lock cannot be acquired
                     // check if the thread is already in the queue
-                    // 如果加锁失败了, 并且也不是当前线程持有锁, 但是当前线程已经在阻塞队列里排队了
+                    // 4. 如果加锁失败了, 并且也不是当前线程持有锁, 但是当前线程已经在阻塞队列里排队了
                     // 获取zset里当前线程的score, 也就是
                     "local timeout = redis.call('zscore', KEYS[3], ARGV[2]);" +
                     "if timeout ~= false then " +
@@ -233,7 +233,8 @@ public class RedissonFairLock extends RedissonLock implements RLock {
                     // add the thread to the queue at the end, and set its timeout in the timeout set to the timeout of
                     // the prior thread in the queue (or the timeout of the lock if the queue is empty) plus the
                     // threadWaitTime
-                    // 如果加锁失败了, 当前线程也没有持有锁, zset也没有这个线程的score, 说明是一个新线程来竞争锁, 就将它加入队列和zset里
+                    // 5. 如果加锁失败了, 当前线程也没有持有锁, zset也没有这个线程的score,
+                    // 说明是一个新线程来竞争锁, 或者是上面while循环里移除掉了, 就将它再次加入队列和zset里
                     // 拿到队列从左往右数的最后一个元素, 标记为lastThreadId
                     "local lastThreadId = redis.call('lindex', KEYS[2], -1);" +
                     "local ttl;" +
