@@ -270,6 +270,7 @@ public class RedissonMultiLock implements RLock {
     public void lockInterruptibly(long leaseTime, TimeUnit unit) throws InterruptedException {
         long baseWaitTime = locks.size() * 1500;
         while (true) {
+            // 计算出一个waitTime
             long waitTime;
             if (leaseTime == -1) {
                 waitTime = baseWaitTime;
@@ -282,6 +283,7 @@ public class RedissonMultiLock implements RLock {
                 }
             }
 
+            // 不停死循环, 阻塞, 直到获取到所有的锁才退出循环
             if (tryLock(waitTime, leaseTime, TimeUnit.MILLISECONDS)) {
                 return;
             }
@@ -365,18 +367,22 @@ public class RedissonMultiLock implements RLock {
         long lockWaitTime = calcLockWaitTime(remainTime);
         
         int failedLocksLimit = failedLocksLimit();
+        // 遍历底层的每一个锁
         List<RLock> acquiredLocks = new ArrayList<>(locks.size());
         for (ListIterator<RLock> iterator = locks.listIterator(); iterator.hasNext();) {
             RLock lock = iterator.next();
             boolean lockAcquired;
             try {
                 if (waitTime == -1 && leaseTime == -1) {
+                    // 加锁
                     lockAcquired = lock.tryLock();
                 } else {
+                    // 加锁
                     long awaitTime = Math.min(lockWaitTime, remainTime);
                     lockAcquired = lock.tryLock(awaitTime, newLeaseTime, TimeUnit.MILLISECONDS);
                 }
             } catch (RedisResponseTimeoutException e) {
+                // 任意一个锁异常, 就解锁所有锁
                 unlockInner(Arrays.asList(lock));
                 lockAcquired = false;
             } catch (Exception e) {
@@ -384,13 +390,16 @@ public class RedissonMultiLock implements RLock {
             }
             
             if (lockAcquired) {
+                // 加锁成功, 将这个锁加入集合
                 acquiredLocks.add(lock);
             } else {
+                // 加锁失败
                 if (locks.size() - acquiredLocks.size() == failedLocksLimit()) {
                     break;
                 }
 
                 if (failedLocksLimit == 0) {
+                    // 任意一个锁加锁失败, 就把加成功的锁给解锁了
                     unlockInner(acquiredLocks);
                     if (waitTime == -1) {
                         return false;
@@ -453,10 +462,12 @@ public class RedissonMultiLock implements RLock {
     public void unlock() {
         List<RFuture<Void>> futures = new ArrayList<>(locks.size());
 
+        // 对所有锁进行异步解锁
         for (RLock lock : locks) {
             futures.add(lock.unlockAsync());
         }
 
+        // 然后异步转同步join进来
         for (RFuture<Void> future : futures) {
             future.toCompletableFuture().join();
         }
