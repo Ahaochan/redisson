@@ -364,8 +364,10 @@ public class RedissonMultiLock implements RLock {
         if (waitTime != -1) {
             remainTime = unit.toMillis(waitTime);
         }
+        // 每个锁的获取超时时间, 超过就获取锁失败
         long lockWaitTime = calcLockWaitTime(remainTime);
-        
+
+        // 加锁失败的数量, 允许多少个子锁加锁失败
         int failedLocksLimit = failedLocksLimit();
         // 遍历底层的每一个锁
         List<RLock> acquiredLocks = new ArrayList<>(locks.size());
@@ -393,11 +395,12 @@ public class RedissonMultiLock implements RLock {
                 // 加锁成功, 将这个锁加入集合
                 acquiredLocks.add(lock);
             } else {
-                // 加锁失败
                 if (locks.size() - acquiredLocks.size() == failedLocksLimit()) {
+                    // 这里刚好到最后一个锁加锁失败, 那也算加锁成功, 直接break出去
                     break;
                 }
 
+                // 如果failedLocksLimit为0, 意味着不允许再加锁失败了, 就解锁所有成功的锁
                 if (failedLocksLimit == 0) {
                     // 任意一个锁加锁失败, 就把加成功的锁给解锁了
                     unlockInner(acquiredLocks);
@@ -411,6 +414,7 @@ public class RedissonMultiLock implements RLock {
                         iterator.previous();
                     }
                 } else {
+                    // 如果failedLocksLimit不为0, 说明还有失败次数可以容忍, 继续加下一个锁
                     failedLocksLimit--;
                 }
             }

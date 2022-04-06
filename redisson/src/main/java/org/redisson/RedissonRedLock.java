@@ -42,15 +42,18 @@ public class RedissonRedLock extends RedissonMultiLock {
 
     @Override
     protected int failedLocksLimit() {
+        // 加锁失败的数量, 超过就完全加锁失败
         return locks.size() - minLocksAmount(locks);
     }
     
     protected int minLocksAmount(final List<RLock> locks) {
+        // 最少要加锁成功的数量
         return locks.size()/2 + 1;
     }
 
     @Override
     protected long calcLockWaitTime(long remainTime) {
+        // 每个锁的获取超时时间
         return Math.max(remainTime / locks.size(), 1);
     }
     
