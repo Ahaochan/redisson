@@ -50,22 +50,36 @@ public class RedissonReadLock extends RedissonLock implements RLock {
     }
 
     String getReadWriteTimeoutNamePrefix(long threadId) {
+        // getLockName(threadId): 命令执行器UUID:线程Id
+        // getRawName(): 锁名称
+        // suffixName(): {锁名称}:命令执行器UUID:线程Id
+        // result: {锁名称}:命令执行器UUID:线程Id:rwlock_timeout
         return suffixName(getRawName(), getLockName(threadId)) + ":rwlock_timeout";
     }
     
     @Override
     <T> RFuture<T> tryLockInnerAsync(long waitTime, long leaseTime, TimeUnit unit, long threadId, RedisStrictCommand<T> command) {
         return evalWriteAsync(getRawName(), LongCodec.INSTANCE, command,
+                                // KEYS[1]是锁名称, KEYS[2]是当前线程标识
+                                // ARGV[1]是过期时间, ARGV[2]是当前线程标识, ARGV[2]是当前线程写锁标识
+
+                                // 获取hash结构的锁key里的mode属性, 判断现在是读锁还是写锁
                                 "local mode = redis.call('hget', KEYS[1], 'mode'); " +
                                 "if (mode == false) then " +
+                                  // 如果锁不存在, 就设置成读锁, 锁重入次数+1,
                                   "redis.call('hset', KEYS[1], 'mode', 'read'); " +
                                   "redis.call('hset', KEYS[1], ARGV[2], 1); " +
+                                  // 设置XXX为1
                                   "redis.call('set', KEYS[2] .. ':1', 1); " +
+                                  // 再设置过期时间为30000毫秒
                                   "redis.call('pexpire', KEYS[2] .. ':1', ARGV[1]); " +
                                   "redis.call('pexpire', KEYS[1], ARGV[1]); " +
                                   "return nil; " +
                                 "end; " +
+                                // 如果已经加了读锁, 可以重复加读锁
+                                // 如果已经加了写锁, 并且是当前线程持有了写锁, 可以重复加读锁
                                 "if (mode == 'read') or (mode == 'write' and redis.call('hexists', KEYS[1], ARGV[3]) == 1) then " +
+                                  // 锁重入次数+1
                                   "local ind = redis.call('hincrby', KEYS[1], ARGV[2], 1); " + 
                                   "local key = KEYS[2] .. ':' .. ind;" +
                                   "redis.call('set', key, 1); " +
@@ -74,6 +88,7 @@ public class RedissonReadLock extends RedissonLock implements RLock {
                                   "redis.call('pexpire', KEYS[1], math.max(remainTime, ARGV[1])); " +
                                   "return nil; " +
                                 "end;" +
+                                // 如果加了写锁, 但是不是当前线程持有的写锁, 就阻塞获取锁, 返回锁的剩余过期时间
                                 "return redis.call('pttl', KEYS[1]);",
                         Arrays.<Object>asList(getRawName(), getReadWriteTimeoutNamePrefix(threadId)),
                         unit.toMillis(leaseTime), getLockName(threadId), getWriteLockName(threadId));
@@ -132,25 +147,35 @@ public class RedissonReadLock extends RedissonLock implements RLock {
     }
 
     protected String getKeyPrefix(long threadId, String timeoutPrefix) {
+        // getLockName(threadId): 命令执行器UUID:线程Id
+        // timeoutPrefix: {锁名称}:命令执行器UUID:线程Id:rwlock_timeout
+        // 结果: {锁名称}
         return timeoutPrefix.split(":" + getLockName(threadId))[0];
     }
     
     @Override
     protected RFuture<Boolean> renewExpirationAsync(long threadId) {
+        // {锁名称}:命令执行器UUID:线程Id:rwlock_timeout
         String timeoutPrefix = getReadWriteTimeoutNamePrefix(threadId);
+        // {锁名称}
         String keyPrefix = getKeyPrefix(threadId, timeoutPrefix);
         
         return evalWriteAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+                // KEYS[1]是锁名称, KEYS[2]是{锁名称}
+                // ARGV[1]是过期时间, ARGV[2]是当前线程加锁标识
                 "local counter = redis.call('hget', KEYS[1], ARGV[2]); " +
                 "if (counter ~= false) then " +
+                    // 当前线程的加锁次数不为0, 就说明有必要进行续期
                     "redis.call('pexpire', KEYS[1], ARGV[1]); " +
-                    
+
+                    // 遍历所有锁key的所有rwlock_timeout属性, 为其续期
                     "if (redis.call('hlen', KEYS[1]) > 1) then " +
                         "local keys = redis.call('hkeys', KEYS[1]); " + 
                         "for n, key in ipairs(keys) do " + 
                             "counter = tonumber(redis.call('hget', KEYS[1], key)); " + 
-                            "if type(counter) == 'number' then " + 
-                                "for i=counter, 1, -1 do " + 
+                            "if type(counter) == 'number' then " +
+                                // 等价于for(int i = count; i >= 1; i--)
+                                "for i=counter, 1, -1 do " +
                                     "redis.call('pexpire', KEYS[2] .. ':' .. key .. ':rwlock_timeout:' .. i, ARGV[1]); " + 
                                 "end; " + 
                             "end; " + 
