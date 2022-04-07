@@ -88,7 +88,7 @@ public class RedissonReadLock extends RedissonLock implements RLock {
                                   "redis.call('pexpire', KEYS[1], math.max(remainTime, ARGV[1])); " +
                                   "return nil; " +
                                 "end;" +
-                                // 如果加了写锁, 但是不是当前线程持有的写锁, 就阻塞获取锁, 返回锁的剩余过期时间
+                                // 如果加了写锁, 但不是当前线程持有的写锁, 就阻塞获取锁, 返回锁的剩余过期时间
                                 "return redis.call('pttl', KEYS[1]);",
                         Arrays.<Object>asList(getRawName(), getReadWriteTimeoutNamePrefix(threadId)),
                         unit.toMillis(leaseTime), getLockName(threadId), getWriteLockName(threadId));

@@ -53,21 +53,29 @@ public class RedissonWriteLock extends RedissonLock implements RLock {
     @Override
     <T> RFuture<T> tryLockInnerAsync(long waitTime, long leaseTime, TimeUnit unit, long threadId, RedisStrictCommand<T> command) {
         return evalWriteAsync(getRawName(), LongCodec.INSTANCE, command,
+                            // KEYS[1]是锁名称
+                            // ARGV[1]是过期时间, ARGV[2]是当前线程加锁标识
+
+                            // 获取hash结构的锁key里的mode属性, 判断现在是读锁还是写锁
                             "local mode = redis.call('hget', KEYS[1], 'mode'); " +
                             "if (mode == false) then " +
+                                  // 如果锁不存在, 就设置成写锁, 锁重入次数设置为1, 并设置好过期时间
                                   "redis.call('hset', KEYS[1], 'mode', 'write'); " +
                                   "redis.call('hset', KEYS[1], ARGV[2], 1); " +
                                   "redis.call('pexpire', KEYS[1], ARGV[1]); " +
                                   "return nil; " +
                               "end; " +
                               "if (mode == 'write') then " +
+                                  // 如果已经加了写锁, 并且是当前线程持有了写锁
                                   "if (redis.call('hexists', KEYS[1], ARGV[2]) == 1) then " +
+                                      // 锁重入次数+1, 并对锁续期
                                       "redis.call('hincrby', KEYS[1], ARGV[2], 1); " + 
                                       "local currentExpire = redis.call('pttl', KEYS[1]); " +
                                       "redis.call('pexpire', KEYS[1], currentExpire + ARGV[1]); " +
                                       "return nil; " +
                                   "end; " +
                                 "end;" +
+                                // 如果加了读锁, 或者加了写锁, 但不是当前线程持有的写锁, 就阻塞获取锁, 返回锁的剩余过期时间
                                 "return redis.call('pttl', KEYS[1]);",
                         Arrays.<Object>asList(getRawName()),
                         unit.toMillis(leaseTime), getLockName(threadId));
