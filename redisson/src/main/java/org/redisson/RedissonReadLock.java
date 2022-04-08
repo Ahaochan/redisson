@@ -96,49 +96,64 @@ public class RedissonReadLock extends RedissonLock implements RLock {
 
     @Override
     protected RFuture<Boolean> unlockInnerAsync(long threadId) {
+        // {锁名称}:命令执行器UUID:线程Id:rwlock_timeout
         String timeoutPrefix = getReadWriteTimeoutNamePrefix(threadId);
+        // {锁名称}
         String keyPrefix = getKeyPrefix(threadId, timeoutPrefix);
 
         return evalWriteAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+                // KEYS[1]是锁名称, KEYS[2]是channel名称, KEYS[3]和KEYS[4]在上面
+                // ARGV[1]是解锁的消息, ARGV[2]是当前线程加锁标识
+
+                // 获取hash结构的锁key里的mode属性, 判断现在是读锁还是写锁
                 "local mode = redis.call('hget', KEYS[1], 'mode'); " +
                 "if (mode == false) then " +
+                    // 如果锁不存在, 就发布解锁消息到channel中
                     "redis.call('publish', KEYS[2], ARGV[1]); " +
                     "return 1; " +
                 "end; " +
+                // 判断当前线程是否加过锁, 没有就不用解锁
                 "local lockExists = redis.call('hexists', KEYS[1], ARGV[2]); " +
                 "if (lockExists == 0) then " +
                     "return nil;" +
                 "end; " +
-                    
+
+                // 如果当前线程加过读锁, 锁的次数就-1
                 "local counter = redis.call('hincrby', KEYS[1], ARGV[2], -1); " + 
                 "if (counter == 0) then " +
+                    // 如果锁重入次数为0, 说明完全解锁了, 就把这个锁key删除了
                     "redis.call('hdel', KEYS[1], ARGV[2]); " + 
                 "end;" +
                 "redis.call('del', KEYS[3] .. ':' .. (counter+1)); " +
                 
                 "if (redis.call('hlen', KEYS[1]) > 1) then " +
                     "local maxRemainTime = -3; " + 
-                    "local keys = redis.call('hkeys', KEYS[1]); " + 
+                    "local keys = redis.call('hkeys', KEYS[1]); " +
+                    // 遍历hash结构的锁key, 取rwlock_timeout的最大值
                     "for n, key in ipairs(keys) do " + 
                         "counter = tonumber(redis.call('hget', KEYS[1], key)); " + 
                         "if type(counter) == 'number' then " + 
                             "for i=counter, 1, -1 do " + 
                                 "local remainTime = redis.call('pttl', KEYS[4] .. ':' .. key .. ':rwlock_timeout:' .. i); " + 
                                 "maxRemainTime = math.max(remainTime, maxRemainTime);" + 
-                            "end; " + 
-                        "end; " + 
+                            "end; " +
+                        "end; " +
                     "end; " +
-                            
+
+                    // 将rwlock_timeout的最大值, 更新到当前锁key的过期时间
                     "if maxRemainTime > 0 then " +
                         "redis.call('pexpire', KEYS[1], maxRemainTime); " +
                         "return 0; " +
                     "end;" + 
-                        
+
+                    // 如果已经没有rwlock_timeout了, 说明读写锁释放完毕
+                    // 然后如果是写锁, 就直接返回了, 因为这里只是解读锁
                     "if mode == 'write' then " + 
                         "return 0;" + 
                     "end; " +
                 "end; " +
-                    
+
+                // 否则如果是写锁的话, 就删除这个锁, 然后发布解锁消息
                 "redis.call('del', KEYS[1]); " +
                 "redis.call('publish', KEYS[2], ARGV[1]); " +
                 "return 1; ",
