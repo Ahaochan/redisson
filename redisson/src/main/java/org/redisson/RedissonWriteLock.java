@@ -84,26 +84,38 @@ public class RedissonWriteLock extends RedissonLock implements RLock {
     @Override
     protected RFuture<Boolean> unlockInnerAsync(long threadId) {
         return evalWriteAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+                // KEYS[1]是锁名称, KEYS[2]是channel名称
+                // ARGV[1]是解读锁的消息, ARGV[2]是存活时间, ARGV[3]是当前线程加锁标识
+
+                // 获取hash结构的锁key里的mode属性, 判断现在是读锁还是写锁
                 "local mode = redis.call('hget', KEYS[1], 'mode'); " +
                 "if (mode == false) then " +
+                    // 如果锁不存在, 就发布解锁消息到channel中
                     "redis.call('publish', KEYS[2], ARGV[1]); " +
                     "return 1; " +
                 "end;" +
+                // 如果当前锁是写锁
                 "if (mode == 'write') then " +
                     "local lockExists = redis.call('hexists', KEYS[1], ARGV[3]); " +
                     "if (lockExists == 0) then " +
+                        // 如果加了写锁, 但不是当前线程加的写锁, 就直接返回, 不能解别的线程加的写锁
                         "return nil;" +
                     "else " +
+                        // 如果加了写锁, 而且是当前线程加的写锁, 就把锁重入次数-1
                         "local counter = redis.call('hincrby', KEYS[1], ARGV[3], -1); " +
                         "if (counter > 0) then " +
+                            // 如果还持有写锁, 就顺便重置锁的过期时间
                             "redis.call('pexpire', KEYS[1], ARGV[2]); " +
                             "return 0; " +
                         "else " +
+                            // 完全释放了写锁, 就把这个线程加的锁删除了
                             "redis.call('hdel', KEYS[1], ARGV[3]); " +
                             "if (redis.call('hlen', KEYS[1]) == 1) then " +
+                                // 读锁也完全释放了, 就把这个锁key删除了, 发布解读锁的消息
                                 "redis.call('del', KEYS[1]); " +
                                 "redis.call('publish', KEYS[2], ARGV[1]); " + 
                             "else " +
+                                // 还有没解锁的读锁, 就锁降级成读锁
                                 // has unlocked read-locks
                                 "redis.call('hset', KEYS[1], 'mode', 'read'); " +
                             "end; " +
@@ -111,6 +123,7 @@ public class RedissonWriteLock extends RedissonLock implements RLock {
                         "end; " +
                     "end; " +
                 "end; "
+                // 如果当前锁是读锁, 就直接返回, 因为这里是解写锁
                 + "return nil;",
         Arrays.<Object>asList(getRawName(), getChannelName()),
         LockPubSub.READ_UNLOCK_MESSAGE, internalLockLeaseTime, getLockName(threadId));
