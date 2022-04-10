@@ -15,10 +15,6 @@
  */
 package org.redisson;
 
-import java.util.Arrays;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.Condition;
-
 import org.redisson.api.RFuture;
 import org.redisson.api.RLock;
 import org.redisson.client.codec.LongCodec;
@@ -27,6 +23,10 @@ import org.redisson.client.protocol.RedisCommands;
 import org.redisson.client.protocol.RedisStrictCommand;
 import org.redisson.command.CommandAsyncExecutor;
 import org.redisson.pubsub.LockPubSub;
+
+import java.util.Arrays;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Condition;
 
 /**
  * Lock will be removed automatically if client disconnects.
@@ -185,8 +185,10 @@ public class RedissonReadLock extends RedissonLock implements RLock {
 
                     // 遍历所有锁key的所有rwlock_timeout属性, 为其续期
                     "if (redis.call('hlen', KEYS[1]) > 1) then " +
-                        "local keys = redis.call('hkeys', KEYS[1]); " + 
-                        "for n, key in ipairs(keys) do " + 
+                        "local keys = redis.call('hkeys', KEYS[1]); " +
+                        // 等价于for循环keys数组, n是从1开始的下标, key是数组中的每个元素
+                        "for n, key in ipairs(keys) do " +
+                            // 从hash结构的锁key中获取每个属性的值
                             "counter = tonumber(redis.call('hget', KEYS[1], key)); " + 
                             "if type(counter) == 'number' then " +
                                 // 等价于for(int i = count; i >= 1; i--)
