@@ -264,8 +264,11 @@ public class RedissonSemaphore extends RedissonExpirable implements RSemaphore {
         }
 
         return commandExecutor.evalWriteAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+                  // KEYS[1]是锁名称
+                  // ARGV[1]是资源数量
                   "local value = redis.call('get', KEYS[1]); " +
                   "if (value ~= false and tonumber(value) >= tonumber(ARGV[1])) then " +
+                      // 资源资源数量大于acquire请求的数量, 就扣减资源数量, 返回成功
                       "local val = redis.call('decrby', KEYS[1], ARGV[1]); " +
                       "return 1; " +
                   "end; " +
@@ -285,6 +288,7 @@ public class RedissonSemaphore extends RedissonExpirable implements RSemaphore {
         long time = unit.toMillis(waitTime);
         long current = System.currentTimeMillis();
 
+        // 1. 尝试获取资源(非阻塞), 成功就直接返回
         if (tryAcquire(permits)) {
             log.debug("acquired, permits: {}, waitTime: {}, unit: {}, name: {}", permits, waitTime, unit, getName());
             return true;
@@ -312,9 +316,11 @@ public class RedissonSemaphore extends RedissonExpirable implements RSemaphore {
                 log.debug("unable to acquire, permits: {}, name: {}", permits, getName());
                 return false;
             }
-            
+
+            // 循环阻塞等待获取资源
             while (true) {
                 current = System.currentTimeMillis();
+                // 不停尝试获取资源, 非公平的
                 if (tryAcquire(permits)) {
                     log.debug("acquired, permits: {}, wait-time: {}, unit: {}, name: {}", permits, waitTime, unit, getName());
                     return true;
@@ -322,6 +328,7 @@ public class RedissonSemaphore extends RedissonExpirable implements RSemaphore {
 
                 time -= System.currentTimeMillis() - current;
                 if (time <= 0) {
+                    // 如果超出了waitTime时间限制, 就获取失败, 返回失败
                     log.debug("unable to acquire, permits: {}, name: {}", permits, getName());
                     return false;
                 }
@@ -449,6 +456,9 @@ public class RedissonSemaphore extends RedissonExpirable implements RSemaphore {
         }
 
         RFuture<Void> future = commandExecutor.evalWriteAsync(getRawName(), StringCodec.INSTANCE, RedisCommands.EVAL_VOID,
+                // KEYS[1]是锁名称, KEYS[2]是channel名称
+                // ARGV[1]是资源数量
+                // 释放资源, 其实就是把资源加回来, 然后发布到channel
                 "local value = redis.call('incrby', KEYS[1], ARGV[1]); " +
                         "redis.call('publish', KEYS[2], value); ",
                 Arrays.asList(getRawName(), getChannelName()), permits);
@@ -468,10 +478,13 @@ public class RedissonSemaphore extends RedissonExpirable implements RSemaphore {
     @Override
     public RFuture<Integer> drainPermitsAsync() {
         return commandExecutor.evalWriteAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_INTEGER,
+                // KEYS[1]是锁名称
                 "local value = redis.call('get', KEYS[1]); " +
                 "if (value == false) then " +
+                    // 如果之前没有设置过资源数量, 就清空失败
                     "return 0; " +
                 "end; " +
+                // 如果之前设置过资源数量, 就允许清空
                 "redis.call('set', KEYS[1], 0); " +
                 "return value;",
                 Collections.singletonList(getRawName()));
@@ -495,12 +508,16 @@ public class RedissonSemaphore extends RedissonExpirable implements RSemaphore {
     @Override
     public RFuture<Boolean> trySetPermitsAsync(int permits) {
         RFuture<Boolean> future = commandExecutor.evalWriteAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+                // KEYS[1]是锁名称, KEYS[2]是channel名称
+                // ARGV[1]是资源数量
                 "local value = redis.call('get', KEYS[1]); " +
                         "if (value == false) then "
+                        // 如果没有设置过资源数量, 就设置一下, 然后发布到channel
                         + "redis.call('set', KEYS[1], ARGV[1]); "
                         + "redis.call('publish', KEYS[2], ARGV[1]); "
                         + "return 1;"
                         + "end;"
+                        // 如果设置过了, 就返回失败
                         + "return 0;",
                 Arrays.asList(getRawName(), getChannelName()), permits);
 
@@ -524,10 +541,14 @@ public class RedissonSemaphore extends RedissonExpirable implements RSemaphore {
     @Override
     public RFuture<Void> addPermitsAsync(int permits) {
         return commandExecutor.evalWriteAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_VOID,
+                // KEYS[1]是锁名称, KEYS[2]是channel名称
+                // ARGV[1]是资源数量
                 "local value = redis.call('get', KEYS[1]); " +
                 "if (value == false) then "
+                    // 如果之前没有设置过资源数量, 就添加失败
                   + "value = 0;"
               + "end;"
+                // 如果之前设置过资源数量, 就允许添加, 然后发布到channel
               + "redis.call('set', KEYS[1], value + ARGV[1]); "
               + "redis.call('publish', KEYS[2], value + ARGV[1]); ",
                 Arrays.asList(getRawName(), getChannelName()), permits);
