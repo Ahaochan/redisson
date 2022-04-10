@@ -54,6 +54,7 @@ public class RedissonCountDownLatch extends RedissonObject implements RCountDown
 
     @Override
     public void await() throws InterruptedException {
+        // 获取这个锁key的值, 如果为0就返回了
         if (getCount() == 0) {
             return;
         }
@@ -61,6 +62,7 @@ public class RedissonCountDownLatch extends RedissonObject implements RCountDown
         CompletableFuture<RedissonCountDownLatchEntry> future = subscribe();
         RedissonCountDownLatchEntry entry = commandExecutor.getInterrupted(future);
         try {
+            // 否则不停死循环, 等待直到value变为0才可以跳出循环
             while (getCount() > 0) {
                 // waiting for open state
                 entry.getLatch().await();
@@ -252,8 +254,13 @@ public class RedissonCountDownLatch extends RedissonObject implements RCountDown
     @Override
     public RFuture<Void> countDownAsync() {
         return commandExecutor.evalWriteNoRetryAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+                        // KEYS[1]是锁名称, KEYS[2]是channel名称
+                        // ARGV[1]是发布的消息
+                        // 扣减资源数量
                         "local v = redis.call('decr', KEYS[1]);" +
+                        // 如果扣减完了, 就删除这个锁key
                         "if v <= 0 then redis.call('del', KEYS[1]) end;" +
+                        // 如果扣减完了, 就发布一个消息
                         "if v == 0 then redis.call('publish', KEYS[2], ARGV[1]) end;",
                     Arrays.<Object>asList(getRawName(), getChannelName()), CountDownLatchPubSub.ZERO_COUNT_MESSAGE);
     }
@@ -273,6 +280,8 @@ public class RedissonCountDownLatch extends RedissonObject implements RCountDown
 
     @Override
     public RFuture<Long> getCountAsync() {
+        // KEYS[1]是锁名称
+        // 获取这个锁key的value
         return commandExecutor.writeAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.GET_LONG, getRawName());
     }
 
@@ -284,11 +293,15 @@ public class RedissonCountDownLatch extends RedissonObject implements RCountDown
     @Override
     public RFuture<Boolean> trySetCountAsync(long count) {
         return commandExecutor.evalWriteAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+                // KEYS[1]是锁名称, KEYS[2]是channel名称
+                // ARGV[1]是发布的消息, ARGV[2]是资源数量
                 "if redis.call('exists', KEYS[1]) == 0 then "
+                    // 如果没有设置过资源数量, 就设置一下, 然后发布到channel
                     + "redis.call('set', KEYS[1], ARGV[2]); "
                     + "redis.call('publish', KEYS[2], ARGV[1]); "
                     + "return 1 "
                 + "else "
+                    // 如果设置过了, 就返回失败
                     + "return 0 "
                 + "end",
                 Arrays.asList(getRawName(), getChannelName()), CountDownLatchPubSub.NEW_COUNT_MESSAGE, count);
