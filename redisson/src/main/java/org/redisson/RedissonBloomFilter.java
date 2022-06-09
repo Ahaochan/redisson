@@ -68,6 +68,8 @@ public class RedissonBloomFilter<T> extends RedissonExpirable implements RBloomF
     protected RedissonBloomFilter(CommandAsyncExecutor commandExecutor, String name) {
         super(commandExecutor, name);
         this.commandExecutor = commandExecutor;
+        // 布隆过滤器的key, {name}:config
+        // 加花括号是使用hash tag特性, 保证Redis Cluster时这个key落在同一个slot槽位
         this.configName = suffixName(getRawName(), "config");
     }
 
@@ -86,6 +88,7 @@ public class RedissonBloomFilter<T> extends RedissonExpirable implements RBloomF
             p = Double.MIN_VALUE;
         }
         return (long) (-n * Math.log(p) / (Math.log(2) * Math.log(2)));
+        // -n * ln(p) / (ln(2) * ln(2))
     }
     
     private long[] hash(Object object) {
@@ -99,6 +102,7 @@ public class RedissonBloomFilter<T> extends RedissonExpirable implements RBloomF
 
     @Override
     public boolean add(T object) {
+        // 1. 对元素进行128位的hash运算, long64位, 所以用数组存储
         long[] hashes = hash(object);
 
         while (true) {
@@ -109,12 +113,15 @@ public class RedissonBloomFilter<T> extends RedissonExpirable implements RBloomF
             int hashIterations = this.hashIterations;
             long size = this.size;
 
+            // 2. 记录hashIterations之后的hash值, 作为大小为size的数组的下标
             long[] indexes = hash(hashes[0], hashes[1], hashIterations, size);
 
             CommandBatchService executorService = new CommandBatchService(commandExecutor);
+            // 确保布隆过滤器初始化tryInit完成
             addConfigCheck(hashIterations, size, executorService);
             RBitSetAsync bs = createBitSet(executorService);
             for (int i = 0; i < indexes.length; i++) {
+                // 3. 将算出来的这几个数组下标存入bitset中, 标记为1
                 bs.setAsync(indexes[i]);
             }
             try {
@@ -135,6 +142,7 @@ public class RedissonBloomFilter<T> extends RedissonExpirable implements RBloomF
     }
 
     private long[] hash(long hash1, long hash2, int iterations, long size) {
+        // 记录iterations次之后的hash值
         long[] indexes = new long[iterations];
         long hash = hash1;
         for (int i = 0; i < iterations; i++) {
@@ -150,6 +158,7 @@ public class RedissonBloomFilter<T> extends RedissonExpirable implements RBloomF
 
     @Override
     public boolean contains(T object) {
+        // 1. 对元素进行128位的hash运算, long64位, 所以用数组存储
         long[] hashes = hash(object);
 
         while (true) {
@@ -160,12 +169,15 @@ public class RedissonBloomFilter<T> extends RedissonExpirable implements RBloomF
             int hashIterations = this.hashIterations;
             long size = this.size;
 
+            // 2. 记录hashIterations之后的hash值, 作为大小为size的数组的下标
             long[] indexes = hash(hashes[0], hashes[1], hashIterations, size);
 
             CommandBatchService executorService = new CommandBatchService(commandExecutor);
+            // 确保布隆过滤器初始化tryInit完成
             addConfigCheck(hashIterations, size, executorService);
             RBitSetAsync bs = createBitSet(executorService);
             for (int i = 0; i < indexes.length; i++) {
+                // 3. 将算出来的这几个数组下标, 从bitset取出
                 bs.getAsync(indexes[i]);
             }
             try {
@@ -194,6 +206,7 @@ public class RedissonBloomFilter<T> extends RedissonExpirable implements RBloomF
         executorService.evalReadAsync(configName, codec, RedisCommands.EVAL_VOID,
                 "local size = redis.call('hget', KEYS[1], 'size');" +
                         "local hashIterations = redis.call('hget', KEYS[1], 'hashIterations');" +
+                        // 确保布隆过滤器初始化tryInit完成
                         "assert(size == ARGV[1] and hashIterations == ARGV[2], 'Bloom filter config has been changed')",
                         Arrays.<Object>asList(configName), size, hashIterations);
     }
@@ -201,9 +214,11 @@ public class RedissonBloomFilter<T> extends RedissonExpirable implements RBloomF
     @Override
     public long count() {
         CommandBatchService executorService = new CommandBatchService(commandExecutor);
+        // hgetall {name}:config
         RFuture<Map<String, String>> configFuture = executorService.readAsync(configName, StringCodec.INSTANCE,
                 new RedisCommand<Map<Object, Object>>("HGETALL", new ObjectMapReplayDecoder()), configName);
         RBitSetAsync bs = createBitSet(executorService);
+        // 返回bitset中全1的数量
         RFuture<Long> cardinalityFuture = bs.cardinalityAsync();
         executorService.execute();
 
@@ -224,6 +239,7 @@ public class RedissonBloomFilter<T> extends RedissonExpirable implements RBloomF
     }
     
     private void readConfig() {
+        // hgetall {name}:config
         RFuture<Map<String, String>> future = commandExecutor.readAsync(configName, StringCodec.INSTANCE,
                 new RedisCommand<Map<Object, Object>>("HGETALL", new ObjectMapReplayDecoder()), configName);
         Map<String, String> config = commandExecutor.get(future);
@@ -232,6 +248,7 @@ public class RedissonBloomFilter<T> extends RedissonExpirable implements RBloomF
     }
 
     private void readConfig(Map<String, String> config) {
+        // 如果没有初始化, 就抛出异常
         if (config.get("hashIterations") == null
                 || config.get("size") == null) {
             throw new IllegalStateException("Bloom filter is not initialized!");
@@ -253,6 +270,8 @@ public class RedissonBloomFilter<T> extends RedissonExpirable implements RBloomF
             throw new IllegalArgumentException("Bloom filter false probability can't be negative");
         }
 
+        // 初始化布隆过滤器, 预计统计元素数量为55000000, 期望误差率为0.03
+        // 布隆过滤器的size为401414246
         size = optimalNumOfBits(expectedInsertions, falseProbability);
         if (size == 0) {
             throw new IllegalArgumentException("Bloom filter calculated size is " + size);
@@ -260,14 +279,17 @@ public class RedissonBloomFilter<T> extends RedissonExpirable implements RBloomF
         if (size > getMaxSize()) {
             throw new IllegalArgumentException("Bloom filter size can't be greater than " + getMaxSize() + ". But calculated size is " + size);
         }
+        // 每个元素的hash次数, hashIterations为5
         hashIterations = optimalNumOfHashFunctions(expectedInsertions, size);
 
         CommandBatchService executorService = new CommandBatchService(commandExecutor);
         executorService.evalReadAsync(configName, codec, RedisCommands.EVAL_VOID,
                 "local size = redis.call('hget', KEYS[1], 'size');" +
                         "local hashIterations = redis.call('hget', KEYS[1], 'hashIterations');" +
+                        // 不允许重复初始化布隆过滤器
                         "assert(size == false and hashIterations == false, 'Bloom filter config has been changed')",
                         Arrays.<Object>asList(configName), size, hashIterations);
+        // hmset {name}:config size 401414246 hashIterations 5 expectedInsertions 55000000 falseProbability 0.03
         executorService.writeAsync(configName, StringCodec.INSTANCE,
                                                 new RedisCommand<Void>("HMSET", new VoidReplayConvertor()), configName,
                 "size", size, "hashIterations", hashIterations,
